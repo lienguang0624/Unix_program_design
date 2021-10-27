@@ -5,6 +5,7 @@
   - [创建锁文件](#创建锁文件)
   - [区域锁定](#区域锁定)
   - [锁定状态下的读写操作](#锁定状态下的读写操作)
+  - [死锁](#死锁)
 # 内存管理
 ## 内存分配
 内存分配函数
@@ -148,7 +149,7 @@ int fcntl(int fildes,int commend, struct flook *flook_structure);
 
 需要注意的是，锁定状态下的读写操作以一定要用底层的read和write函数，不能使用IO封装好的fread和fwrite函数。
 
-案例：
+案例（对内存上锁使用案例.c）：
 
 ```c
 #include <unistd.h>
@@ -208,5 +209,117 @@ int main() {
 }
 
 ```
+对上述上锁程序通过如下程序(测试上锁情况所用案例.c)进行测试，观察上锁情况（先运行上述程序，再运行下面的程序）
+```c
+#include <unistd.h>
+#include <stdlib.h>
+#include <stdio.h>
+#include <fcntl.h>
+
+
+const char *test_file = "/tmp/test_lock";
+#define SIZE_TO_TRY 5
+
+void show_lock_info(struct flock *to_show);
+
+
+int main() {
+    int file_desc;
+    int res;
+    struct flock region_to_test;
+    int start_byte;
+    
+        /* open a file descriptor 打开一个文件描述符 */
+    file_desc = open(test_file, O_RDWR | O_CREAT, 0666);
+    if (!file_desc) {
+        fprintf(stderr, "Unable to open %s for read/write", test_file);
+        exit(EXIT_FAILURE);
+    }
+
+    for (start_byte = 0; start_byte < 99; start_byte += SIZE_TO_TRY) {
+            /* set up the region we wish to test 设置希望测试的文件区域*/
+        region_to_test.l_type = F_WRLCK;
+        region_to_test.l_whence = SEEK_SET;
+        region_to_test.l_start = start_byte;
+        region_to_test.l_len = SIZE_TO_TRY;
+        region_to_test.l_pid = -1;     
+
+        printf("Testing F_WRLCK on region from %d to %d\n", 
+               start_byte, start_byte + SIZE_TO_TRY);
+        
+            /* now test the lock on the file 测试文件上的锁*/
+        res = fcntl(file_desc, F_GETLK, &region_to_test);
+        if (res == -1) {
+            fprintf(stderr, "F_GETLK failed\n");
+            exit(EXIT_FAILURE);
+        }
+        if (region_to_test.l_pid != -1) {
+            printf("Lock would fail. F_GETLK returned:\n");
+            show_lock_info(&region_to_test);
+        }
+        else {
+            printf("F_WRLCK - Lock would succeed\n");
+        }
+
+            /* now repeat the test with a shared (read) lock 用共享锁再测一次 */
+            /*（共享锁测试可以通过，独占锁测试将无法通过）*/
+            /* set up the region we wish to test 再次设置测试参数*/
+        region_to_test.l_type = F_RDLCK;
+        region_to_test.l_whence = SEEK_SET;
+        region_to_test.l_start = start_byte;
+        region_to_test.l_len = SIZE_TO_TRY;
+        region_to_test.l_pid = -1;     
+
+        printf("Testing F_RDLCK on region from %d to %d\n", 
+               start_byte, start_byte + SIZE_TO_TRY);
+        
+            /* now test the lock on the file */
+        res = fcntl(file_desc, F_GETLK, &region_to_test);
+        if (res == -1) {
+            fprintf(stderr, "F_GETLK failed\n");
+            exit(EXIT_FAILURE);
+        }
+        if (region_to_test.l_pid != -1) {
+            printf("Lock would fail. F_GETLK returned:\n");
+            show_lock_info(&region_to_test);            
+        }
+        else {
+            printf("F_RDLCK - Lock would succeed\n");
+        }
+
+    } /* for */
+    
+    close(file_desc);
+    exit(EXIT_SUCCESS);
+}
+
+void show_lock_info(struct flock *to_show) {
+    printf("\tl_type %d, ", to_show->l_type);
+    printf("l_whence %d, ", to_show->l_whence);
+    printf("l_start %d, ", (int)to_show->l_start);        
+    printf("l_len %d, ", (int)to_show->l_len);
+    printf("l_pid %d\n", to_show->l_pid);
+}
+```
+
+## 死锁
+
+假设两个程序想要更新同一个文件，他们需要同时更新文件中的字节1和字节2，程序A选择首先更新字节2，然后更新字节1，程序B反之。
+
+两个程序同时启动，程序A锁定字节2，程序B锁定字节1。
+
+然后程序A尝试锁定字节1，但由于该字节被程序B锁定，所以程序A将会等待。
+
+同时程序B尝试锁定字节2，但由于该字节被程序A锁定，所以程序B也在等待。
+
+这样两个程序都无法向下执行，该现象称为死锁。
+
+
+
+
+
+
+
+
 
 
